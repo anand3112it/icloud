@@ -1,0 +1,31 @@
+composer create-project --prefer-dist laravel/laravel:^7.0 icloud
+php artisan key:generate
+sudo chmod -R a+rwx <folder>
+
+php artisan ui vue --auth
+npm install
+npm run dev
+
+post_max_size = 6G
+upload_max_filesize = 4G
+memory_limit = 8G
+
+sudo /etc/init.d/apache2 restart
+
+php artisan make:migration create_branch_table
+php artisan make:migration create_feecategory_table
+php artisan make:migration create_fee_types_table
+php artisan make:migration create_module_table
+php artisan make:migration create_entrymode_table
+php artisan make:migration create_financial_trans_table
+php artisan make:migration create_financial_transdetail_table
+php artisan make:migration create_common_fee_collection_table
+php artisan make:migration create_common_fee_collection_headwise_table
+
+php artisan migrate
+php artisan migrate:refresh (rollback + migrate)
+
+php artisan make:seeder EntrymodeSeeder
+php artisan make:seeder ModuleSeeder
+
+php artisan db:seed
