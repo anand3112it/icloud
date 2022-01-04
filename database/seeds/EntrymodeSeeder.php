@@ -18,7 +18,7 @@ class EntrymodeSeeder extends Seeder
                 'entrymodeno' => '0',
             ],
             [
-                'entry_modename' => 'REVDUE',
+                'entry_modename' => 'revdue',
                 'crdr' => 'C',
                 'entrymodeno' => '12',
             ],
@@ -38,32 +38,32 @@ class EntrymodeSeeder extends Seeder
                 'entrymodeno' => '15',
             ],
             [
-                'entry_modename' => 'RCPT',
+                'entry_modename' => 'rcpt',
                 'crdr' => 'C',
                 'entrymodeno' => '0',
             ],
             [
-                'entry_modename' => 'REVRCPT',
+                'entry_modename' => 'revrcpt',
                 'crdr' => 'D',
                 'entrymodeno' => '0',
             ],
             [
-                'entry_modename' => 'JV',
+                'entry_modename' => 'jv',
                 'crdr' => 'C',
                 'entrymodeno' => '14',
             ],
             [
-                'entry_modename' => 'RevJV',
+                'entry_modename' => 'revjv',
                 'crdr' => 'D',
                 'entrymodeno' => '14',
             ],
             [
-                'entry_modename' => 'PMT',
+                'entry_modename' => 'pmt',
                 'crdr' => 'D',
                 'entrymodeno' => '1',
             ],
             [
-                'entry_modename' => 'REVPMT',
+                'entry_modename' => 'revpmt',
                 'crdr' => 'C',
                 'entrymodeno' => '1',
             ],

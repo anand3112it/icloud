@@ -3,7 +3,7 @@
 namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
-use App\{Branch, FeeCategory, FeeCollectionType, Module, EntryMode, FeeTypes, FinancialTrans, FinancialTransDetail, CommonFeeCollection, CommonFeeCollectionHeadWise};
+use App\{Branch, FeeCategory, FeeCollectionType, Module, EntryMode, FeeTypes, FinancialTrans, FinancialTransDetail, CommonFeeCollection, CommonFeeCollectionHeadWise, TransactionLog};
 use Validator;
 use Exception;
 use DB;
@@ -13,6 +13,7 @@ class ImportController extends Controller
     private $totalCount = 0;
     private $successCount = 0;
     private $failedCount = 0;
+    private $patchNo = 0;
 
     public function index()
     {
@@ -44,6 +45,11 @@ class ImportController extends Controller
         $module = Module::select('id', 'module_name', 'module_id')->get()->toArray();
         $entry_mode = EntryMode::select('id', 'entry_modename', 'crdr', 'entrymodeno')->get()->toArray();
 
+        $module_map = array_column($module, NULL, 'module_name');
+        $entry_mode_map = array_column($entry_mode, NULL, 'entry_modename');
+
+        $this->setPatchNo();
+
         $result = array();
         if ($handle !== false) {
             $data = array();
@@ -58,7 +64,7 @@ class ImportController extends Controller
                 $data[] = $row;
 
                 if ($i >= 1000) {
-                    $result[] = $this->processData($data, $module, array_column($entry_mode, NULL, 'entry_modename'));
+                    $result[] = $this->processData($data, $module_map, $entry_mode_map);
 
                     $i = 0;
                     $data = array();
@@ -66,7 +72,7 @@ class ImportController extends Controller
             }
 
             if (!empty($data)) {
-                $result[] = $this->processData($data, $module, array_column($entry_mode, NULL, 'entry_modename'));
+                $result[] = $this->processData($data, $module_map, $entry_mode_map);
             }
         }
 
@@ -81,6 +87,8 @@ class ImportController extends Controller
         $data = $error = array();
 
         try {
+            $this->createLog($batchRecords);
+
             $branch = $this->fetchBranch($batchRecords);
             if (empty($branch)) {
                 throw new Exception('Branch fetch failed');
@@ -96,7 +104,7 @@ class ImportController extends Controller
                 throw new Exception('Fees collection type fetch failed');
             }
 
-            $fees_type = $this->fetchFeesTypes($batchRecords);
+            $fees_type = $this->fetchFeesTypes($batchRecords, $fees_category, $fees_collection_type, $module);
             if (empty($fees_type)) {
                 throw new Exception('Fees type fetch failed');
             }
@@ -107,7 +115,7 @@ class ImportController extends Controller
 
             $common_fees_collection = $this->createCommonFeesCollection($batchRecords, $branch, $entry_mode);
 
-            $this->createCommonFeesCollectionHeadWise($batchRecords, $common_fees_collection, $branch, $fees_type, $entry_mode);
+            $this->createCommonFeesCollectionHeadWise($batchRecords, $common_fees_collection, $branch, $fees_type, $entry_mode, $module);
 
             $status = 'success';
             $message = 'Batch data success';
@@ -220,12 +228,14 @@ class ImportController extends Controller
         return $obj->mapFeesCollectionType($obj->getAll());
     }
 
-    public function fetchFeesTypes(array $records)
+    public function fetchFeesTypes(array $records, $fees_category, $collection_type, $module)
     {
         $unique_fee_type = array_filter(array_unique(array_column($records, 16)));
         if (empty($unique_fee_type)) {
             return [];
         }
+
+        $fee_category_map = array_column($records, 10, 16);
 
         $obj = new FeeTypes();
         $map_fee_type = $obj->mapFeesType($obj->getAll($unique_fee_type));
@@ -236,10 +246,14 @@ class ImportController extends Controller
         foreach ($unique_fee_type as $fees_type) {
             foreach ($branch as $branch_info) {
                 if (!isset($map_fee_type[$branch_info['id']][$fees_type])) {
+                    $category = $fee_category_map[$fees_type] ?? 0;
+
                     $new[] = [
+                        'fee_category' => $fees_category[$branch_info['id']][$category] ?? 0,
                         'f_name' => $fees_type,
                         'br_id' => $branch_info['id'],
-                        'fee_type_ledger' => '',
+                        'fee_type_ledger' => $fees_type,
+                        'collection_id' => $collection_type[$branch_info['id']][$this->getModuleName($fees_type)] ?? 0,
                     ];
                 }
             }
@@ -301,6 +315,7 @@ class ImportController extends Controller
         foreach ($map_records as $trans_id => $trans_info) {
             if (isset($map_exist_trans_map[$trans_id])) {
                 $temp = array(
+                    'amount=(amount + '.(!empty($trans_info['amount'])?$trans_info['amount']:0).')',
                     'due_amount=(due_amount + '.(!empty($trans_info['due_amount'])?$trans_info['due_amount']:0).')',
                     'concession_amount=(concession_amount + '.(!empty($trans_info['concession_amount'])?$trans_info['concession_amount']:0).')',
                     'duerev=(duerev + '.(!empty($trans_info['duerev'])?$trans_info['duerev']:0).')',
@@ -313,13 +328,16 @@ class ImportController extends Controller
                 $new[] = $trans_info;
             }
         }
-
+        
         if (!empty($new)) {
             FinancialTrans::insert($new);
         }
 
         if (!empty($update)) {
-            DB::statement(implode(';', $update));
+            $chunk = array_chunk($update, 500);
+            foreach ($chunk as $update_array) {
+                DB::unprepared(implode(';', $update_array));
+            }
         }
 
         $exist_trans = FinancialTrans::select('id', 'tranid')->whereIn('tranid', array_keys($map_records))->get()->toArray();
@@ -335,6 +353,7 @@ class ImportController extends Controller
             $branch_id = $branch[$info[11]] ?? 0;
 
             $new[] = [
+                'paid_date' => !empty($info[1])?date('Y-m-d', strtotime($info[1].' 00:00:00')):NULL,
                 'financialtranid' => $transaction[$info[6]] ?? 0,
                 'moduleid' => 1,
                 'amount' => $info[18] ?? 0,
@@ -400,7 +419,10 @@ class ImportController extends Controller
         }
 
         if (!empty($update)) {
-            DB::statement(implode(';', $update));
+            $chunk = array_chunk($update, 500);
+            foreach ($chunk as $update_array) {
+                DB::unprepared(implode(';', $update_array));
+            }
         }
 
         $exist_trans = CommonFeeCollection::select('id', 'transid')->whereIn('transid', array_keys($map_records))->get()->toArray();
@@ -408,7 +430,7 @@ class ImportController extends Controller
         return !empty($exist_trans)?array_column($exist_trans, 'id', 'transid'):array();
     }
 
-    public function createCommonFeesCollectionHeadWise($records, $transaction, $branch, $fees_type, $entry_mode)
+    public function createCommonFeesCollectionHeadWise($records, $transaction, $branch, $fees_type, $entry_mode, $module)
     {
         $new = array();
         foreach ($records as $info) {
@@ -416,7 +438,8 @@ class ImportController extends Controller
             $branch_id = $branch[$info[11]] ?? 0;
 
             $new[] = [
-                'moduleid' => 1,
+                'paid_date' => !empty($info[1])?date('Y-m-d', strtotime($info[1].' 00:00:00')):NULL,
+                'moduleid' => $module[$this->getModuleName($info[16] ?? '999')]['module_id'] ?? 0,
                 'receiptid' => $transaction[$info[6]] ?? 0,
                 'headid' => $fees_type[$branch_id][$info[16]] ?? 0,
                 'headname' => $info[16],
@@ -426,5 +449,83 @@ class ImportController extends Controller
         }
 
         return CommonFeeCollectionHeadWise::insert($new);
+    }
+
+    public function getModuleName($fee_types)
+    {
+        if (in_array($fee_types, ['TUITION FEE', 'Exam Fee', 'Security Fee', 'Ajustable_Excess_Amount', 'Adjusted_Amount', 'Reckecking/Scrutiny Fee', 'Exam Fee (CemeCter)', 'Degree/Convocation/Certificate fee', 'Training & Certification Fee', 'Exam Fee Debarred', 'Tuition Fee Debarred', 'Exam Fees Back Paper', 'Exam Fee (Letral Deploma)', 'Registration Fee', 'Tuition Fee (IBM Classes)', 'Thesis Fees', 'Exam Fees', 'Tuition Fees', 'Excess Amount', 'Degree Fees', 'Degree Fee'])) {
+            return 'academic';
+        } elseif (in_array($fee_types, ['Fine Fee', 'Adjustable Excess Fee', 'Tuition Fee (Back Paper)', 'Tuition Fee (IBM ClaCCeC)', 'Library Fine Fee', 'Exam Fee (Back Paper)', 'Library BookC Recieved', 'Sport Activity Received', 'Exam Fees Debarred Paper', 'Tution Fees debarred paper', 'Convocation Fee Head', 'Student ID Fee', 'Library Books Recieved', 'Special Backlog fee', 'Registration FIne Even Sem', 'Online Registration Fine odd Sem', 'Revaluation Fee', 'Rechecking Fee', 'Indisciplinary Fine', 'Exam Fee ET Eligibilty', 'Online Registration Fine even Sem', 'Misc Exam Fees Back Paper', 'Exam Fee (Semester)', 'OTHER FEES', 'Tuition Fees', 'Other Fee', 'Registration FIne Odd Sem', 'Student ID Fee MISC'])) {
+            return 'academicmisc';
+        } elseif (in_array($fee_types, ['Hostel & Mess Fee'])) {
+            return 'hostel'; 
+        } elseif (in_array($fee_types, [])) {
+            return 'hostelmisc';
+        } elseif (in_array($fee_types, [])) {
+            return 'transport';
+        } elseif (in_array($fee_types, ['TRANSPORT FEE'])) {
+            return 'transportmisc';
+        } else {
+            return 'invalid';
+        } 
+    }
+
+    public function createLog($records)
+    {
+        if (empty($records)) {
+            return false;
+        }
+
+        $time = time();
+        $client_ip = request()->ip();
+
+        $temp = array();
+        foreach ($records as $details) {
+            $temp[] = [
+                'transaction_date' => !empty($details[1])?date('Y-m-d', strtotime($details[1].' 00:00:00')):NULL,
+                'academic_year' => $details[2] ?? '',
+                'session_year' => $details[3] ?? '',
+                'alloted_category' => $details[4] ?? '',
+                'voucher_type' => $details[5] ?? '',
+                'voucher_no' => $details[6] ?? '',
+                'roll_no' => $details[7] ?? '',
+                'adm_no' => $details[8] ?? '',
+                'trans_status' => $details[9] ?? '',
+                'fee_category' => $details[10] ?? '',
+                'faculty' => $details[11] ?? '',
+                'program' => !empty($details[12])?htmlentities($details[12]):'',
+                'department' => !empty($details[13])?htmlentities($details[13]):'',
+                'batch' => !empty($details[14])?htmlentities($details[14]):'',
+                'receipt_no' => $details[15] ?? '',
+                'fee_head' => $details[16] ?? '',
+                'due_amount' => $details[17] ?? '0.00',
+                'paid_amount' => $details[18] ?? '0.00',
+                'concession_amount' => $details[19] ?? '0.00',
+                'scholarship_amount' => $details[20] ?? '0.00',
+                'reverse_concession_amount' => $details[21] ?? '0.00',
+                'write_off_amount' => $details[22] ?? '0.00',
+                'adjusted_amount' => $details[23] ?? '0.00',
+                'refund_amount' => $details[24] ?? '0.00',
+                'fund_transfer_amount' => $details[25] ?? '0.00',
+                'remarks' => !empty($details[26])?htmlentities($details[26]):'',
+                'created_at' => $time,
+                'created_ip' => $client_ip,
+                'batch_no' => $this->patchNo,
+            ];
+        }
+
+        return TransactionLog::insert($temp);
+    }
+
+    public function setPatchNo()
+    {
+        $last_batch_no = TransactionLog::select('batch_no')->orderByDesc('id')->limit(1)->value('batch_no');
+
+        $last_batch_no = !empty($last_batch_no)?$last_batch_no:0;
+        $last_batch_no++;
+
+        $this->patchNo = $last_batch_no;
+
+        return true;
     }
 }
